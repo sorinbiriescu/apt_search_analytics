@@ -20,13 +20,10 @@ db_passwd = st.secrets.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
 log_level = st.secrets.get("LOGLEVEL", "INFO")
 mapbox_access_token = st.secrets.get("MAPBOX_ACCESS_TOKEN")
 
-st.write(platform)
 # environment = os.environ.get('APT_SEARCH_ANALYTICS_ENV')
 # db_passwd = os.environ.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
 # log_level = os.environ.get("LOGLEVEL", "INFO")
 # mapbox_access_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
-
-
 
 handle = "apt_search_analytics"
 logger = logging.getLogger(handle)
