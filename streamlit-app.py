@@ -13,10 +13,20 @@ import sklearn.cluster as cluster
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 import altair as alt
 
-environment = os.environ.get('APT_SEARCH_ANALYTICS_ENV')
-db_passwd = os.environ.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
-log_level = os.environ.get("LOGLEVEL", "INFO")
-mapbox_access_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
+
+platform = st.secrets.get('PLATFORM')
+environment = st.secrets.get('APT_SEARCH_ANALYTICS_ENV')
+db_passwd = st.secrets.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
+log_level = st.secrets.get("LOGLEVEL", "INFO")
+mapbox_access_token = st.secrets.get("MAPBOX_ACCESS_TOKEN")
+
+
+# environment = os.environ.get('APT_SEARCH_ANALYTICS_ENV')
+# db_passwd = os.environ.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
+# log_level = os.environ.get("LOGLEVEL", "INFO")
+# mapbox_access_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
+
+
 
 handle = "apt_search_analytics"
 logger = logging.getLogger(handle)

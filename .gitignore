@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 project_info.md
 Dockerfile
+secrets.toml
 
 # C extensions
 *.so
