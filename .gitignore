@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+project_info.md
+Dockerfile
 
 # C extensions
 *.so
