@@ -91,7 +91,7 @@ def get_unique_locations(request_date = DT.date.today().strftime("%Y-%m-%d")):
 
 
 @st.cache(suppress_st_warning=True)
-def get_data(location,
+def get_data(location = "GLOBAL",
                 request_date = DT.date.today().strftime("%Y-%m-%d"),
                 time_horizon = 7,
                 min_price = 0,
@@ -112,14 +112,14 @@ def get_data(location,
         "apt_location_lat", "apt_location_long", "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted", "ad_source"]
     
     query_stmt = sqlalchemy.text(
-        """SELECT * FROM {}
+        """SELECT * FROM {0}
         WHERE ad_published_date >= :start_date AND
             apt_price >= :min_price AND
             apt_price <= :max_price AND
             apt_size >= :min_apt_size AND
-            apt_size <= :max_apt_size AND
-            apt_location = ANY(:location)
-        """.format(table_name),)
+            apt_size <= :max_apt_size
+            {1}
+        """.format(table_name, ["AND apt_location = ANY(:location)" if location != "GLOBAL" else ""][0]),)
 
     try:
         with pool.connect() as db_conn:
@@ -166,6 +166,9 @@ def clean_data(df):
 
     return df
 
+def make_link_clickable(val):
+    # target _blank to open new window
+    return '<a target="_blank" href="{}">{}</a>'.format(val, val)
 
 def add_taxes_to_price(df):
     df["apt_price_w_taxes"] = df["apt_price"]*1.08
@@ -208,6 +211,9 @@ def create_price_bins(df):
 
 
 def generate_cluster_chart(df, show_elbow = False):
+    if len(df) <= 15:
+        return None, None
+
     mask_no_apt_size = df["apt_size"].isna()
     mask_no_price_per_sqm = df["apt_price_per_sqm"].isna()
     mask_no_postal_code = df["apt_postal_code"].isna()
@@ -295,6 +301,75 @@ def generate_results_map(data):
     return fig
 
 
+def create_price_distr_chart(df):
+    price_binned = df.loc[:,("ad_id","apt_price_bins")].groupby("apt_price_bins").count().reset_index()
+    price_binned.sort_values(by = ["apt_price_bins"], inplace = True, ascending = True)
+    price_binned["apt_price_bins"] = price_binned["apt_price_bins"].astype(str)
+
+    chart = alt.Chart(price_binned).mark_bar().encode(
+        x = "apt_price_bins:O",
+        y = "ad_id"
+    )
+
+    return chart
+
+
+def create_ppsqm_distr_chart(df):
+    ppsqm_binned = df.loc[:,("ad_id","apt_price_per_sqm_bins")].groupby("apt_price_per_sqm_bins").count().reset_index()
+    ppsqm_binned.sort_values(by = ["apt_price_per_sqm_bins"], inplace = True, ascending = True)
+    ppsqm_binned["apt_price_per_sqm_bins"] = ppsqm_binned["apt_price_per_sqm_bins"].astype(str)
+
+    chart = alt.Chart(ppsqm_binned).mark_bar().encode(
+        x = "apt_price_per_sqm_bins:O",
+        y = "ad_id"
+    )
+
+    return chart
+
+
+def create_apt_size_distr_chart(df):
+    size_binned = df.loc[:,("ad_id","apt_size_bins")].groupby("apt_size_bins").count().reset_index()
+    size_binned.sort_values(by = ["apt_size_bins"], inplace = True, ascending = True)
+    size_binned["apt_size_bins"] = size_binned["apt_size_bins"].astype(str)
+
+    chart = alt.Chart(size_binned).mark_bar().encode(
+        x = "apt_size_bins:O",
+        y = "ad_id"
+    )
+
+    return chart
+
+
+def generate_market_analysis(df):
+    cluster_chart, elbow_chart = generate_cluster_chart(df, show_elbow= st.session_state["show_elbow_chart"])
+    if cluster_chart:
+        st.altair_chart(cluster_chart, use_container_width=True)
+    if elbow_chart:
+        st.altair_chart(elbow_chart, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.altair_chart(create_price_distr_chart(df))
+    with col2:
+        st.altair_chart(create_ppsqm_distr_chart(df))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.altair_chart(create_apt_size_distr_chart(df))
+
+
+def run_data_pipeline(data, data_cols):
+    df = pd.DataFrame(data, columns = data_cols) \
+        .pipe(clean_data) \
+        .pipe(add_taxes_to_price) \
+        .pipe(add_ppsqm) \
+        .pipe(filter_ppsqm, st.session_state["ppsqm"]) \
+        .pipe(deduce_apt_size) \
+        .pipe(create_price_bins)
+
+    return df
+
+
 st.markdown('# Apartment search Lyon')
 st.write('Please use the form in the sidebar to get results')
 
@@ -303,6 +378,7 @@ results_placeholder = st.empty()
 
 with st.form(key = "filter_criteria"):
     with st.sidebar:
+        st.markdown('# Filters')
         start_price_slider, end_price_slider = st.select_slider('Apartment Price',
             options=[price for price in range(0,525000,25000)],
             key = "price",
@@ -329,6 +405,10 @@ with st.form(key = "filter_criteria"):
         st.markdown("***")
         elbow_chart_option = st.checkbox('Show cluster elbow chart', key= "show_elbow_chart", value = False)
 
+        st.markdown("***")
+        elbow_chart_option = st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
+        
+
         submit = st.form_submit_button(label="Submit", help=None)   
 
     if submit:
@@ -343,13 +423,7 @@ with st.form(key = "filter_criteria"):
             location = st.session_state["locations"]
             )
         
-        df = pd.DataFrame(data, columns = table_cols) \
-                .pipe(clean_data) \
-                .pipe(add_taxes_to_price) \
-                .pipe(add_ppsqm) \
-                .pipe(filter_ppsqm, st.session_state["ppsqm"]) \
-                .pipe(deduce_apt_size) \
-                .pipe(create_price_bins)
+        df = run_data_pipeline(data, table_cols)
 
         with results_placeholder.container():
             st.write("Last data update: {}".format(get_last_data_update()))
@@ -358,9 +432,12 @@ with st.form(key = "filter_criteria"):
             st.dataframe(df.loc[:,datatable_cols].sort_values(by = "apt_price_per_sqm", ascending = True))
             st.plotly_chart(generate_results_map(df), use_container_width=True)
 
-            st.markdown('## Situation analysis')
+            st.markdown('## Market analysis')
+            st.markdown('### Filtered data analysis')
+            generate_market_analysis(df)
 
-            cluster_chart, elbow_chart = generate_cluster_chart(df, show_elbow= st.session_state["show_elbow_chart"])
-            st.altair_chart(cluster_chart, use_container_width=True)
-            if elbow_chart:
-                st.altair_chart(elbow_chart, use_container_width=True)
+            if st.session_state["show_global_analysis"]:
+                st.markdown('### Global data analysis')
+                global_data, global_table_cols = get_data(location = "GLOBAL", time_horizon = 365)
+                global_df = run_data_pipeline(global_data, global_table_cols)
+                generate_market_analysis(global_df)
