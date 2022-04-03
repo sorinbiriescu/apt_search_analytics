@@ -1,10 +1,6 @@
-import sys
-import os
 import streamlit as st
-from google.cloud.sql.connector import connector, IPTypes
-import sqlalchemy
-import pg8000
 from pg8000.exceptions import DatabaseError
+from  pg8000.native import Connection
 import datetime as DT
 import pandas as pd
 import logging
@@ -16,59 +12,49 @@ import altair as alt
 
 platform = st.secrets.get('PLATFORM')
 environment = st.secrets.get('APT_SEARCH_ANALYTICS_ENV')
-db_passwd = st.secrets.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
+hostname = st.secrets.get('APT_SEARCH_ANALYTICS_SB_DB_HOSTNAME')
+db_user = st.secrets.get('APT_SEARCH_ANALYTICS_SB_DB_USER')
+db_passwd = st.secrets.get('APT_SEARCH_ANALYTICS_SB_DB_PASSWD')
+db_name = st.secrets.get('APT_SEARCH_ANALYTICS_SB_DB_NAME')
 log_level = st.secrets.get("LOGLEVEL", "INFO")
 mapbox_access_token = st.secrets.get("MAPBOX_ACCESS_TOKEN")
 
-# environment = os.environ.get('APT_SEARCH_ANALYTICS_ENV')
-# db_passwd = os.environ.get('APT_SEARCH_ANALYTICS_DB_PASSWD')
-# log_level = os.environ.get("LOGLEVEL", "INFO")
-# mapbox_access_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
 
 handle = "apt_search_analytics"
 logger = logging.getLogger(handle)
 logging.basicConfig(level = log_level)
+
 logger.debug("Current environment: {}".format(environment))
+logger.debug("DB hostname: {}".format(hostname))
+logger.debug("DB passw: {}".format(db_passwd))
 
-def getconn():
-    conn = connector.connect(
-        "apartment-search-analytics:europe-west1:apt-analytics-db01",
-        "pg8000",
-        user = "postgres",
-        password = db_passwd,
-        db = "postgres",
-        ip_type = IPTypes.PUBLIC
+
+conn = Connection(db_user,
+    host = hostname,
+    database = db_name,
+    password = db_passwd
     )
-    return conn
-
-pool = sqlalchemy.create_engine(
-    "postgresql+pg8000://",
-    creator = getconn,
-)
 
 
 @st.cache(suppress_st_warning=True)
 def get_last_data_update(request_date = DT.date.today().strftime("%Y-%m-%d")):
     logger.debug("Cache miss, get_last_data_update function ran")
-    logger.debug("Request date: {}".format(request_date))
+    logger.debug(f"Request date: {request_date}")
     
     table_name = environment+".apt_ads_data"
 
-    query_stmt = sqlalchemy.text(
-        """SELECT MAX(ad_published_date) FROM {}
-        """.format(table_name),)
-
     try:
-        with pool.connect() as db_conn:
-            result = db_conn.execute(query_stmt, 
-                ).fetchall()
+        result = conn.run(
+            f"""SELECT MAX(ad_published_date) FROM {table_name}
+            """
+            )
         
-            return result
+        return result
 
-    except DatabaseError:
-        logging.critical("A error occured: {}".format(DatabaseError))
+    except DatabaseError as e:
+        logging.critical(f"A error occured: {e.args} - {e.message}")
     except Exception as e:
-        logging.critical("A error occured: {}".format(e)) 
+        logging.critical(f"A error occured: {e}") 
 
 
 @st.cache(suppress_st_warning=True)
@@ -78,18 +64,15 @@ def get_unique_locations(request_date = DT.date.today().strftime("%Y-%m-%d")):
     
     table_name = environment+".apt_ads_data"
 
-    query_stmt = sqlalchemy.text(
-        """SELECT DISTINCT apt_location FROM {}
-        """.format(table_name),)
-
     try:
-        with pool.connect() as db_conn:
-            result = db_conn.execute(query_stmt, 
-                ).fetchall()
+        result = conn.run(
+            f"""SELECT DISTINCT apt_location FROM {table_name}
+            """
+            )
 
-            logger.debug(result)
-        
-            return [x[0] for x in result]
+        logger.debug(result)
+    
+        return [x[0] for x in result]
 
     except DatabaseError:
         logging.critical("A error occured: {}".format(DatabaseError))
@@ -118,34 +101,32 @@ def get_data(location = "GLOBAL",
     table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces", "apt_nb_bedrooms", "apt_location",
         "apt_location_lat", "apt_location_long", "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted", "ad_source"]
     
-    query_stmt = sqlalchemy.text(
-        """SELECT * FROM {0}
+    query_stmt = """SELECT * FROM {0}
         WHERE ad_published_date >= :start_date AND
             apt_price >= :min_price AND
             apt_price <= :max_price AND
             apt_size >= :min_apt_size AND
             apt_size <= :max_apt_size
             {1}
-        """.format(table_name, ["AND apt_location = ANY(:location)" if location != "GLOBAL" else ""][0]),)
+        """.format(table_name, ["AND apt_location = ANY(:location)" if location != "GLOBAL" else ""][0])
 
     try:
-        with pool.connect() as db_conn:
-            result = db_conn.execute(query_stmt,
-                table_name = table_name,
-                start_date = date_lt_T,
-                min_price = min_price,
-                max_price = max_price,
-                min_apt_size = min_apt_size,
-                max_apt_size = max_apt_size,
-                location = tuple(location)
-                ).fetchall()
+        result = conn.run(query_stmt,
+            table_name = table_name,
+            start_date = date_lt_T,
+            min_price = min_price,
+            max_price = max_price,
+            min_apt_size = min_apt_size,
+            max_apt_size = max_apt_size,
+            location = tuple(location)
+            )
 
-            logger.debug(result)
-        
-            return result, table_cols
+        logger.debug(result)
+    
+        return result, table_cols
 
-    except DatabaseError:
-        logging.critical("A error occured: {}".format(DatabaseError))
+    except DatabaseError as e:
+        logging.critical("A error occured: {} - {}".format(e.args, e.message))
     except Exception as e:
         logging.critical("A error occured: {}".format(e))
 
