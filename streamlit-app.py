@@ -86,8 +86,8 @@ def get_data(location = "GLOBAL",
                 time_horizon = 7,
                 min_price = 0,
                 max_price = 999999999999,
-                min_apt_size = 0,
-                max_apt_size = 999999999999
+                min_apt_size = None,
+                max_apt_size = None
                 ):
 
     logger.debug("Cache miss, get_data function ran")
@@ -101,14 +101,14 @@ def get_data(location = "GLOBAL",
     table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces", "apt_nb_bedrooms", "apt_location",
         "apt_location_lat", "apt_location_long", "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted", "ad_source"]
     
-    query_stmt = """SELECT * FROM {0}
-        WHERE ad_published_date >= :start_date AND
-            apt_price >= :min_price AND
-            apt_price <= :max_price AND
-            apt_size >= :min_apt_size AND
-            apt_size <= :max_apt_size
-            {1}
-        """.format(table_name, ["AND apt_location = ANY(:location)" if location != "GLOBAL" else ""][0])
+    query_stmt = f"""SELECT * FROM {table_name}
+        WHERE ad_published_date >= :start_date
+            {["AND apt_price >= :min_price" if min_price else ""][0]}
+            {["AND apt_price <= :max_price" if max_price else ""][0]}
+            {["AND apt_size >= :min_apt_size" if min_apt_size else ""][0]}
+            {["AND apt_size <= :max_apt_size" if max_apt_size else ""][0]}
+            {["AND apt_location = ANY(:location)" if location != "GLOBAL" else ""][0]}
+        """
 
     try:
         result = conn.run(query_stmt,
