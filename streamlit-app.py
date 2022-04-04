@@ -98,8 +98,10 @@ def get_data(location = "GLOBAL",
     logger.debug("Location list {}".format(",".join(str('{}'.format(loc)) for loc in location)))
 
     table_name = environment+".apt_ads_data"
-    table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces", "apt_nb_bedrooms", "apt_location",
-        "apt_location_lat", "apt_location_long", "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted", "ad_source"]
+    table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces",
+        "apt_nb_bedrooms", "apt_location", "apt_location_lat", "apt_location_long",
+        "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted",
+        "ad_source", "ad_scraping_date"]
     
     query_stmt = f"""SELECT * FROM {table_name}
         WHERE ad_published_date >= :start_date
