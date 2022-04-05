@@ -285,12 +285,6 @@ def generate_cluster_chart(df, k, show_elbow = False):
 
 
 def generate_results_on_map(data):
-    buffer = io.StringIO()
-    data.info(buf=buffer)
-    s = buffer.getvalue()
-    st.text(s)
-    st.dataframe(data.loc[:10, ("apt_location_long", "apt_location_lat")])
-
     data["index"] = data.index
     data["index"] = data["index"].astype(str)
 
