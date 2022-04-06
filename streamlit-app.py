@@ -16,6 +16,7 @@ import math
 import pydeck as pdk
 from pydeck.types import String
 import io
+from scipy import stats
 
 platform = st.secrets.get('PLATFORM')
 environment = st.secrets.get('APT_SEARCH_ANALYTICS_ENV')
@@ -192,6 +193,90 @@ def create_price_bins(df):
     df['apt_size_bins'] = pd.cut( x = df['Size'], bins=[0, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300, 400, 500])
 
     return df
+
+
+def run_Kolmogorov_Smirnov_test():
+    data = st.session_state["ad_data_local"]
+
+    # private_df = data.loc[data["Seller"] == "private", ("Price / sqm")]
+    # pro_df = data.loc[data["Seller"] == "pro", ("Price / sqm")]
+    # statistic, p_value = stats.ks_2samp(private_df, pro_df, alternative = "two-sided")
+    
+    # st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
+    #     the same as pro ones")
+    # st.write(f"statistic: `{statistic}`")
+    # st.write(f"p value: `{p_value}`")
+
+    # alpha_level = 0.05
+
+    # if p_value <= alpha_level:
+    #     st.markdown("Null hypothesis rejected - Price distributions different")
+    # else:
+    #     st.markdown("Failed to reject the null hypothesis - Price distributions are the same")
+
+    data = create_price_bins(data)
+    stats_df_private = data.loc[data["Seller"] == "private", ("ad_id","apt_price_per_sqm_bins")] \
+        .groupby("apt_price_per_sqm_bins") \
+        .count() \
+        .reset_index() \
+        .rename(columns = {'ad_id': 'frequency'})
+    stats_df_private['pdf'] = stats_df_private['frequency'] / sum(stats_df_private['frequency'])
+    stats_df_private['cdf'] = stats_df_private['pdf'].cumsum()
+    stats_df_private["apt_price_per_sqm_bins"] = stats_df_private["apt_price_per_sqm_bins"].astype("string")
+    
+    stats_df_pro = data.loc[data["Seller"] == "pro", ("ad_id","apt_price_per_sqm_bins")] \
+        .groupby("apt_price_per_sqm_bins") \
+        .count() \
+        .reset_index() \
+        .rename(columns = {'ad_id': 'frequency'})
+    stats_df_pro['pdf'] = stats_df_pro['frequency'] / sum(stats_df_pro['frequency'])
+    stats_df_pro['cdf'] = stats_df_pro['pdf'].cumsum()
+    stats_df_pro["apt_price_per_sqm_bins"] = stats_df_pro["apt_price_per_sqm_bins"].astype("string")
+
+
+    statistic, p_value = stats.ks_2samp(stats_df_private["pdf"], stats_df_pro["pdf"], alternative = "two-sided")
+    
+    st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
+        the same as pro ones")
+    st.write(f"statistic: `{statistic}`")
+    st.write(f"p value: `{p_value}`")
+
+    alpha_level = 0.05
+
+    if p_value <= alpha_level:
+        st.markdown("Null hypothesis rejected - Price distributions different")
+    else:
+        st.markdown("Failed to reject the null hypothesis - Price distributions are the same")
+
+
+    chart_pdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            y='pdf'
+        )
+
+    chart_pdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            y='pdf'
+        )
+
+    chart_cdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            y='cdf'
+        )
+
+    chart_cdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            y='cdf'
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.altair_chart(chart_pdf_private + chart_pdf_pro)
+    with col2:
+        st.altair_chart(chart_cdf_private + chart_cdf_pro)
+        
+
+    return
 
 
 def generate_cluster_chart(df, k, show_elbow = False):
@@ -404,6 +489,7 @@ def rename_columns(df):
 def reset_index(df):
     return df.reset_index(drop = True)
 
+
 def run_data_pipeline(scope = "local"):
     time_hor = [3 if scope == "local" else 365][0]
 
@@ -441,6 +527,10 @@ def format_sort_options(option):
 def format_sort_direction(option):
     return SORT_DIRECTION.get(option)
 
+
+# RESULTS PAGE ------------------------------------------------------------------
+
+# Sidebar form
 with st.form(key = "filter_criteria"):
     with st.sidebar:
         st.markdown('# Filters')
@@ -492,10 +582,9 @@ with st.form(key = "filter_criteria"):
 
         submit = st.form_submit_button(label="Submit", help=None)   
 
-
 run_data_pipeline()
 
-# MAIN PAGE RESULTS ------------------------------------------------------------------
+# Main page
 
 st.markdown('# Apartment search Lyon')
 st.write('👈 Please use the form in the sidebar to filter results')
@@ -555,6 +644,9 @@ with results_container.container():
 st.markdown('## Market analysis')
 st.markdown('### Filtered data analysis')
 generate_market_analysis()
+
+st.markdown('## Kolmogorov Smirnov test')
+run_Kolmogorov_Smirnov_test()
 
 if st.session_state["show_global_analysis"]:
     st.markdown('### Global data analysis')
