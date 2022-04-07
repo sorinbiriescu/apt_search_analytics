@@ -196,30 +196,15 @@ def create_price_bins(df):
 
 
 def run_Kolmogorov_Smirnov_test():
-    data = st.session_state["ad_data_local"]
+    data = st.session_state["ad_data_global"]
 
-    # private_df = data.loc[data["Seller"] == "private", ("Price / sqm")]
-    # pro_df = data.loc[data["Seller"] == "pro", ("Price / sqm")]
-    # statistic, p_value = stats.ks_2samp(private_df, pro_df, alternative = "two-sided")
-    
-    # st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
-    #     the same as pro ones")
-    # st.write(f"statistic: `{statistic}`")
-    # st.write(f"p value: `{p_value}`")
-
-    # alpha_level = 0.05
-
-    # if p_value <= alpha_level:
-    #     st.markdown("Null hypothesis rejected - Price distributions different")
-    # else:
-    #     st.markdown("Failed to reject the null hypothesis - Price distributions are the same")
-
-    data = create_price_bins(data)
+    data['apt_price_per_sqm_bins'] = pd.cut( x = data['Price / sqm'], bins = range(0,12000, 250))
     stats_df_private = data.loc[data["Seller"] == "private", ("ad_id","apt_price_per_sqm_bins")] \
         .groupby("apt_price_per_sqm_bins") \
         .count() \
         .reset_index() \
-        .rename(columns = {'ad_id': 'frequency'})
+        .rename(columns = {'ad_id': 'frequency'}) \
+        .sort_values(by = "apt_price_per_sqm_bins", ascending = True)
     stats_df_private['pdf'] = stats_df_private['frequency'] / sum(stats_df_private['frequency'])
     stats_df_private['cdf'] = stats_df_private['pdf'].cumsum()
     stats_df_private["apt_price_per_sqm_bins"] = stats_df_private["apt_price_per_sqm_bins"].astype("string")
@@ -228,13 +213,14 @@ def run_Kolmogorov_Smirnov_test():
         .groupby("apt_price_per_sqm_bins") \
         .count() \
         .reset_index() \
-        .rename(columns = {'ad_id': 'frequency'})
+        .rename(columns = {'ad_id': 'frequency'}) \
+        .sort_values(by = "apt_price_per_sqm_bins", ascending = True)
     stats_df_pro['pdf'] = stats_df_pro['frequency'] / sum(stats_df_pro['frequency'])
     stats_df_pro['cdf'] = stats_df_pro['pdf'].cumsum()
     stats_df_pro["apt_price_per_sqm_bins"] = stats_df_pro["apt_price_per_sqm_bins"].astype("string")
 
 
-    statistic, p_value = stats.ks_2samp(stats_df_private["pdf"], stats_df_pro["pdf"], alternative = "two-sided")
+    statistic, p_value = stats.ks_2samp(stats_df_private["cdf"], stats_df_pro["cdf"], alternative = "two-sided")
     
     st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
         the same as pro ones")
@@ -250,31 +236,65 @@ def run_Kolmogorov_Smirnov_test():
 
 
     chart_pdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
-            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            x= alt.X('apt_price_per_sqm_bins:O',
+                sort = stats_df_private["apt_price_per_sqm_bins"].tolist(),
+                axis=alt.Axis(labels=False)),
             y='pdf'
         )
 
     chart_pdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
-            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            x= alt.X('apt_price_per_sqm_bins:O',
+                sort = stats_df_pro["apt_price_per_sqm_bins"].tolist(),
+                axis=alt.Axis(labels=False)),
             y='pdf'
         )
 
     chart_cdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
-            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            x= alt.X('apt_price_per_sqm_bins:O',
+                sort = stats_df_private["apt_price_per_sqm_bins"].tolist(),
+                axis=alt.Axis(labels=False)),
             y='cdf'
         )
 
     chart_cdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
-            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            x= alt.X('apt_price_per_sqm_bins:O',
+                sort = stats_df_pro["apt_price_per_sqm_bins"].tolist(),
+                axis=alt.Axis(labels=False)),
             y='cdf'
         )
 
     col1, col2 = st.columns(2)
     with col1:
-        st.altair_chart(chart_pdf_private + chart_pdf_pro)
+        st.altair_chart(chart_pdf_private + chart_pdf_pro, use_container_width= True)
     with col2:
-        st.altair_chart(chart_cdf_private + chart_cdf_pro)
+        st.altair_chart(chart_cdf_private + chart_cdf_pro, use_container_width= True)
         
+
+    return
+
+
+def show_price_distributions():
+    data = st.session_state["ad_data_global"]
+    data['apt_size_bins'] = pd.cut( x = data['Size'], bins=[0, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300, 400, 500])
+    data = data.loc[:, ("apt_size_bins", "Price / sqm", "Seller")] \
+        .groupby(["apt_size_bins", "Seller"]) \
+        .mean() \
+        .reset_index() \
+        .sort_values(by = "apt_size_bins", ascending = True)
+
+    data["apt_size_bins"] = data["apt_size_bins"].astype("string")
+    data["Seller"] = data["Seller"].astype("string")
+
+    chart = alt.Chart(data).mark_bar().encode(
+        x = alt.X('Seller:O'),
+        y = 'Price / sqm:Q',
+        color = 'Seller:N',
+        column = alt.Column('apt_size_bins:N', 
+            sort = data["apt_size_bins"].tolist()
+            )
+        )
+
+    st.altair_chart(chart)
 
     return
 
@@ -333,6 +353,7 @@ def generate_cluster_chart(df, k, show_elbow = False):
 
 
 def generate_results_on_map(data):
+    data.dropna(axis = 0, subset = ["apt_location_long", "apt_location_lat"], inplace = True)
     data["index"] = data.index + 1
     data["index"] = data["index"].astype(str)
 
@@ -561,6 +582,7 @@ with st.form(key = "filter_criteria"):
                         )
 
         st.markdown("***")
+        st.checkbox('Show filtered results analysis', key= "show_local_analysis", value = False)
         st.number_input("# of groups - local",
             key = "nb_clusters_local",
             min_value = 0,
@@ -571,13 +593,14 @@ with st.form(key = "filter_criteria"):
             key= "show_elbow_chart", value = False)
 
         st.markdown("***")
+        st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
         st.number_input("# of groups - global",
             key = "nb_clusters_global",
             min_value = 0,
             max_value = 15,
             format = "%i",
             value = 5)
-        st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
+        
         
 
         submit = st.form_submit_button(label="Submit", help=None)   
@@ -641,14 +664,18 @@ with results_container.container():
 
     st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
 
-st.markdown('## Market analysis')
-st.markdown('### Filtered data analysis')
-generate_market_analysis()
-
-st.markdown('## Kolmogorov Smirnov test')
-run_Kolmogorov_Smirnov_test()
+if st.session_state["show_local_analysis"]:
+    st.markdown('## Market analysis')
+    st.markdown('### Filtered data analysis')
+    generate_market_analysis()
 
 if st.session_state["show_global_analysis"]:
     st.markdown('### Global data analysis')
     run_data_pipeline(scope = "global")
     generate_market_analysis(scope = "global")
+
+    st.markdown('## Kolmogorov Smirnov test')
+    run_Kolmogorov_Smirnov_test()
+
+    st.markdown('## Price distributions')
+    show_price_distributions()
