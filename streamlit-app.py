@@ -1,3 +1,4 @@
+from cProfile import label
 from pyparsing import col
 import streamlit as st
 from pg8000.exceptions import DatabaseError
@@ -15,6 +16,7 @@ import math
 import pydeck as pdk
 from pydeck.types import String
 import io
+from scipy import stats
 
 platform = st.secrets.get('PLATFORM')
 environment = st.secrets.get('APT_SEARCH_ANALYTICS_ENV')
@@ -186,39 +188,123 @@ def deduce_apt_size(df):
 
 
 def create_price_bins(df):
-    df['apt_price_bins'] = pd.cut( x = df['apt_price'], bins=[0, 50000, 100000, 125000, 150000, 175000, 200000, 225000, 250000, 275000, 300000, 350000, 400000, 500000, 1000000])
-    df['apt_price_per_sqm_bins'] = pd.cut( x = df['apt_price_per_sqm'], bins=[0, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000, 8000, 10000, 15000, 50000])
-    df['apt_size_bins'] = pd.cut( x = df['apt_size'], bins=[0, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300, 400, 500])
+    df['apt_price_bins'] = pd.cut( x = df['Price'], bins=[0, 50000, 100000, 125000, 150000, 175000, 200000, 225000, 250000, 275000, 300000, 350000, 400000, 500000, 1000000])
+    df['apt_price_per_sqm_bins'] = pd.cut( x = df['Price / sqm'], bins=[0, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000, 8000, 10000, 15000, 50000])
+    df['apt_size_bins'] = pd.cut( x = df['Size'], bins=[0, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300, 400, 500])
 
     return df
+
+
+def run_Kolmogorov_Smirnov_test():
+    data = st.session_state["ad_data_local"]
+
+    # private_df = data.loc[data["Seller"] == "private", ("Price / sqm")]
+    # pro_df = data.loc[data["Seller"] == "pro", ("Price / sqm")]
+    # statistic, p_value = stats.ks_2samp(private_df, pro_df, alternative = "two-sided")
+    
+    # st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
+    #     the same as pro ones")
+    # st.write(f"statistic: `{statistic}`")
+    # st.write(f"p value: `{p_value}`")
+
+    # alpha_level = 0.05
+
+    # if p_value <= alpha_level:
+    #     st.markdown("Null hypothesis rejected - Price distributions different")
+    # else:
+    #     st.markdown("Failed to reject the null hypothesis - Price distributions are the same")
+
+    data = create_price_bins(data)
+    stats_df_private = data.loc[data["Seller"] == "private", ("ad_id","apt_price_per_sqm_bins")] \
+        .groupby("apt_price_per_sqm_bins") \
+        .count() \
+        .reset_index() \
+        .rename(columns = {'ad_id': 'frequency'})
+    stats_df_private['pdf'] = stats_df_private['frequency'] / sum(stats_df_private['frequency'])
+    stats_df_private['cdf'] = stats_df_private['pdf'].cumsum()
+    stats_df_private["apt_price_per_sqm_bins"] = stats_df_private["apt_price_per_sqm_bins"].astype("string")
+    
+    stats_df_pro = data.loc[data["Seller"] == "pro", ("ad_id","apt_price_per_sqm_bins")] \
+        .groupby("apt_price_per_sqm_bins") \
+        .count() \
+        .reset_index() \
+        .rename(columns = {'ad_id': 'frequency'})
+    stats_df_pro['pdf'] = stats_df_pro['frequency'] / sum(stats_df_pro['frequency'])
+    stats_df_pro['cdf'] = stats_df_pro['pdf'].cumsum()
+    stats_df_pro["apt_price_per_sqm_bins"] = stats_df_pro["apt_price_per_sqm_bins"].astype("string")
+
+
+    statistic, p_value = stats.ks_2samp(stats_df_private["pdf"], stats_df_pro["pdf"], alternative = "two-sided")
+    
+    st.markdown("The null hypothesis is that the price / sqm distribution of private sellers is \
+        the same as pro ones")
+    st.write(f"statistic: `{statistic}`")
+    st.write(f"p value: `{p_value}`")
+
+    alpha_level = 0.05
+
+    if p_value <= alpha_level:
+        st.markdown("Null hypothesis rejected - Price distributions different")
+    else:
+        st.markdown("Failed to reject the null hypothesis - Price distributions are the same")
+
+
+    chart_pdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            y='pdf'
+        )
+
+    chart_pdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            y='pdf'
+        )
+
+    chart_cdf_private = alt.Chart(stats_df_private).mark_line(interpolate='step-after').encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_private["apt_price_per_sqm_bins"].tolist()),
+            y='cdf'
+        )
+
+    chart_cdf_pro = alt.Chart(stats_df_pro).mark_line(interpolate='step-after', color="#FFAA00").encode(
+            x= alt.X('apt_price_per_sqm_bins:O', sort = stats_df_pro["apt_price_per_sqm_bins"].tolist()),
+            y='cdf'
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.altair_chart(chart_pdf_private + chart_pdf_pro)
+    with col2:
+        st.altair_chart(chart_cdf_private + chart_cdf_pro)
+        
+
+    return
 
 
 def generate_cluster_chart(df, k, show_elbow = False):
     if len(df) <= 15:
         return None, None
 
-    mask_no_apt_size = df["apt_size"].isna()
-    mask_no_price_per_sqm = df["apt_price_per_sqm"].isna()
-    mask_no_postal_code = df["apt_postal_code"].isna()
+    mask_no_apt_size = df["Size"].isna()
+    mask_no_price_per_sqm = df["Price / sqm"].isna()
+    mask_no_postal_code = df["Location"].isna()
     df_null_values = df.loc[mask_no_apt_size | mask_no_price_per_sqm | mask_no_postal_code]
     df = df.loc[~df.index.isin(df_null_values.index)]
 
     apt_size_scaler = StandardScaler()
-    df["apt_size_norm"] = apt_size_scaler.fit_transform(df[["apt_size"]])
+    df["apt_size_norm"] = apt_size_scaler.fit_transform(df[["Size"]])
 
     apt_price_per_sqm_scaler = StandardScaler()
-    df["apt_price_per_sqm_norm"] = apt_price_per_sqm_scaler.fit_transform(df[["apt_price_per_sqm"]])
+    df["apt_price_per_sqm_norm"] = apt_price_per_sqm_scaler.fit_transform(df[["Price / sqm"]])
 
     ordinal_encoder = OrdinalEncoder()
-    ordinal_encoder.fit_transform(df[["apt_postal_code"]])
+    ordinal_encoder.fit_transform(df[["Location"]])
 
     kmeans = cluster.KMeans(n_clusters = k ,init = "k-means++")
     kmeans.fit(df[["apt_price_per_sqm_norm", "apt_size_norm"]])
     df['clusters'] = kmeans.labels_
 
-    cluster_chart = alt.Chart(df.loc[:,("apt_size","apt_price_per_sqm","clusters")]).mark_circle().encode(
-        x = "apt_size:Q",
-        y = "apt_price_per_sqm:Q",
+    cluster_chart = alt.Chart(df.loc[:,("Size","Price / sqm","clusters")]).mark_circle().encode(
+        x = "Size:Q",
+        y = "Price / sqm:Q",
         color = "clusters:N"
     ).properties(
         title = 'Price per sqm per size',
@@ -246,46 +332,8 @@ def generate_cluster_chart(df, k, show_elbow = False):
         return cluster_chart, None
 
 
-# def generate_results_on_map(data):
-#     fig = go.Figure()
-
-#     fig.add_trace(go.Scattermapbox(
-#             lat = data["apt_location_lat"],
-#             lon = data["apt_location_long"],
-#             mode = 'markers+text',
-#             marker = go.scattermapbox.Marker(
-#                 size = 17,
-#                 color = 'rgb(255, 0, 0)',
-#                 opacity = 1
-#             ),
-#             text = data.index,
-#             textposition = "bottom right",
-#         ))
-
-#     fig.update_layout(
-#         autosize = False,
-#         width = 1200,
-#         height = 800,
-#         hovermode = 'closest',
-#         showlegend = False,
-#         mapbox = dict(
-#             accesstoken = mapbox_access_token,
-#             bearing = 0,
-#             center = dict(
-#                 lat = 45.763420,
-#                 lon = 4.834277
-#             ),
-#             pitch = 0,
-#             zoom = 12,
-#             style = 'light'
-#         ),
-#     )
-
-#     return fig
-
-
 def generate_results_on_map(data):
-    data["index"] = data.index
+    data["index"] = data.index + 1
     data["index"] = data["index"].astype(str)
 
     layer = pdk.Layer(
@@ -329,52 +377,31 @@ def generate_results_on_map(data):
         initial_view_state = view_state,
         tooltip={"text": "{index}"},)
 
-def create_price_distr_chart(df):
-    price_binned = df.loc[:,("ad_id","apt_price_bins")].groupby("apt_price_bins").count().reset_index()
-    price_binned.sort_values(by = ["apt_price_bins"], inplace = True, ascending = True)
-    price_binned["apt_price_bins"] = price_binned["apt_price_bins"].astype(str)
 
-    chart = alt.Chart(price_binned).mark_bar().encode(
-        x = "apt_price_bins:O",
-        y = "ad_id"
+def create_distr_chart(data, bin_name, group_name):
+    chart_data = data.loc[:,("ad_id", bin_name)].groupby(bin_name).count().reset_index()
+    chart_data.sort_values(by = [bin_name], inplace = True, ascending = True)
+    chart_data[bin_name] = chart_data[bin_name].astype(str)
+
+    chart = alt.Chart(chart_data).mark_bar().encode(
+        x = alt.X(f"{bin_name}:O", sort = chart_data[bin_name].tolist(),axis=alt.Axis(title= group_name)),
+        y = alt.Y("ad_id",  axis=alt.Axis(title= "Total count"))
     )
 
     return chart
 
 
-def create_ppsqm_distr_chart(df):
-    ppsqm_binned = df.loc[:,("ad_id","apt_price_per_sqm_bins")].groupby("apt_price_per_sqm_bins").count().reset_index()
-    ppsqm_binned.sort_values(by = ["apt_price_per_sqm_bins"], inplace = True, ascending = True)
-    ppsqm_binned["apt_price_per_sqm_bins"] = ppsqm_binned["apt_price_per_sqm_bins"].astype(str)
-
-    chart = alt.Chart(ppsqm_binned).mark_bar().encode(
-        x = "apt_price_per_sqm_bins:O",
-        y = "ad_id"
-    )
-
-    return chart
-
-
-def create_apt_size_distr_chart(df):
-    size_binned = df.loc[:,("ad_id","apt_size_bins")].groupby("apt_size_bins").count().reset_index()
-    size_binned.sort_values(by = ["apt_size_bins"], inplace = True, ascending = True)
-    size_binned["apt_size_bins"] = size_binned["apt_size_bins"].astype(str)
-
-    chart = alt.Chart(size_binned).mark_bar().encode(
-        x = "apt_size_bins:O",
-        y = "ad_id"
-    )
-
-    return chart
-
-
-def generate_market_analysis(df, scope = "local"):
+def generate_market_analysis(scope = "local"):
     if scope == "local":
         k = st.session_state["nb_clusters_local"]
+        data = st.session_state["ad_data_local"]
     else:
         k = st.session_state["nb_clusters_global"]
+        data = st.session_state["ad_data_global"]
 
-    cluster_chart, elbow_chart = generate_cluster_chart(df, k ,show_elbow= st.session_state["show_elbow_chart"])
+    data = create_price_bins(data)
+
+    cluster_chart, elbow_chart = generate_cluster_chart(data, k ,show_elbow= st.session_state["show_elbow_chart"])
 
     if cluster_chart:
         st.altair_chart(cluster_chart, use_container_width=True)
@@ -383,42 +410,127 @@ def generate_market_analysis(df, scope = "local"):
 
     col1, col2 = st.columns(2)
     with col1:
-        st.altair_chart(create_price_distr_chart(df))
+        st.altair_chart(create_distr_chart(data, "apt_price_bins", "Total price"))
     with col2:
-        st.altair_chart(create_ppsqm_distr_chart(df))
+        st.altair_chart(create_distr_chart(data, "apt_price_per_sqm_bins", "Price / sqm"))
 
     col1, col2 = st.columns(2)
     with col1:
-        st.altair_chart(create_apt_size_distr_chart(df))
+        st.altair_chart(create_distr_chart(data, "apt_size_bins", "Apartment size"))
 
 
-def open_tabs(data):
-    curr_pos = int(st.session_state["open_tabs"])
-    next_pos = curr_pos + 5
-    logger.info("REACHED HERE")
-    filtered = data.loc[curr_pos:next_pos,("ad_link")]
+def generate_result_entry(index, row):
+        st.markdown(f"### {index + 1} - {row['Name']}")
+        st.markdown(f"Description: {row['Description'][:300]} ...")
 
-    logger.debug(filtered)
+        r_col1, r_col2, r_col3 = st.columns([1,1,2])
+        with r_col3:
+            st.markdown(f'Location: `{row["Location"]}`')
+        with r_col2:
+            st.markdown(f'Rooms: `{row["Rooms"]:.0f}`')
+        with r_col1:
+            st.markdown(f'Size: `{row["Size"]:.0f}`')
 
-    for link in filtered:
-        webbrowser.open_new(link)
-        time.sleep(1)
-    
-    st.session_state["open_tabs"] = next_pos
-    st.stop()
 
-def run_data_pipeline(data, data_cols):
-    df = pd.DataFrame(data, columns = data_cols) \
+        r_col4, r_col5, r_col6 = st.columns([1,1,2])
+        with r_col4:
+            st.markdown(f'Price: `{row["Price"]:,}`')
+        with r_col5:
+            st.markdown(f'Price w: taxes: `{row["Price w. taxes"]:,}`')
+        with r_col6:
+            st.markdown(f'Price w. taxes & comm: `{row["Price w.taxes & comm"]:,}`')
+
+        st.markdown(f'Price per sqm: `{row["Price / sqm"]:,}`')
+
+        st.markdown(row["Link"])
+
+        r_col7, r_col8, r_col9 = st.columns([1,1,2])
+        with r_col9:
+            st.markdown(f'Ad publish date: **{row["Published date"]}**')
+        with r_col8:
+            st.markdown(f'Seller type: **{row["Seller"]}**')
+        with r_col7:
+            st.markdown(f'Boosted ad: **{row["Boosted"]}**')
+
+        st.markdown(f"***")
+
+def subset_results(df):
+    DATATABLE_COLS = ["ad_name", "ad_description", "apt_size", "apt_nb_pieces",
+    "apt_location", "apt_price", "apt_price_w_taxes","apt_price_w_taxes_n_commission", 
+    "apt_price_per_sqm", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted",
+    "apt_location_lat", "apt_location_long"]
+
+    return df.loc[:, DATATABLE_COLS]
+
+
+def sort_values(df):
+    return df.sort_values(by = st.session_state.get("sort_option", "apt_price_per_sqm"),
+        ascending = st.session_state.get("sort_direction", True))
+
+
+def rename_columns(df):
+    RENAME_MAPPING = {"ad_name": "Name",
+        "ad_description": "Description",
+        "apt_size": "Size",
+        "apt_nb_pieces": "Rooms",
+        "apt_location": "Location",
+        "apt_price": "Price",
+        "apt_price_w_taxes": "Price w. taxes",
+        "apt_price_w_taxes_n_commission": "Price w.taxes & comm",
+        "apt_price_per_sqm": "Price / sqm",
+        "ad_link": "Link",
+        "ad_published_date": "Published date",
+        "ad_seller_type": "Seller",
+        "ad_is_boosted": "Boosted"}
+
+    return df.rename(columns = RENAME_MAPPING)
+
+
+def reset_index(df):
+    return df.reset_index(drop = True)
+
+
+def run_data_pipeline(scope = "local"):
+    time_hor = [3 if scope == "local" else 365][0]
+
+    data, data_cols = get_data(time_horizon = time_hor,
+        min_price = int(st.session_state["price"][0]),
+        max_price = int(st.session_state["price"][1]),
+        min_apt_size = int(st.session_state["apt_size"][0]),
+        max_apt_size = int(st.session_state["apt_size"][1]),
+        location = st.session_state["locations"]
+        )
+
+    st.session_state[f"ad_data_{scope}"] = pd.DataFrame(data, columns = data_cols) \
         .pipe(clean_data) \
         .pipe(add_taxes_to_price) \
         .pipe(add_ppsqm) \
         .pipe(filter_ppsqm, st.session_state["ppsqm"]) \
         .pipe(deduce_apt_size) \
-        .pipe(create_price_bins)
+        .pipe(sort_values) \
+        .pipe(rename_columns) \
+        .pipe(reset_index)
+    
+    return
 
-    return df
+SORT_OPTIONS = {"apt_price_per_sqm": "Price per sqm",
+        "apt_price":"Apt. price",
+        "apt_price_w_taxes": "Apt. price with taxes",
+        "apt_size": "Apartment size"}
+
+SORT_DIRECTION = {True: "Ascending",
+    False: "Descending"}
+
+def format_sort_options(option):
+    return SORT_OPTIONS.get(option)
+
+def format_sort_direction(option):
+    return SORT_DIRECTION.get(option)
 
 
+# RESULTS PAGE ------------------------------------------------------------------
+
+# Sidebar form
 with st.form(key = "filter_criteria"):
     with st.sidebar:
         st.markdown('# Filters')
@@ -470,57 +582,20 @@ with st.form(key = "filter_criteria"):
 
         submit = st.form_submit_button(label="Submit", help=None)   
 
-    # if submit:
-    #     for k,v in st.session_state.items():
-    #         st.write((k,v))
+run_data_pipeline()
 
-data, table_cols = get_data(time_horizon = 3,
-    min_price = int(st.session_state["price"][0]),
-    max_price = int(st.session_state["price"][1]),
-    min_apt_size = int(st.session_state["apt_size"][0]),
-    max_apt_size = int(st.session_state["apt_size"][1]),
-    location = st.session_state["locations"]
-    )
-
-df = run_data_pipeline(data, table_cols)
-datatable_cols = ["ad_name", "ad_description", "apt_size", "apt_nb_pieces",
-    "apt_location", "apt_price", "apt_price_w_taxes","apt_price_w_taxes_n_commission", 
-    "apt_price_per_sqm", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted",
-    "apt_location_lat", "apt_location_long"]
-
-rename_mapping = {"ad_name": "Name",
-        "ad_description": "Description",
-        "apt_size": "Size",
-        "apt_nb_pieces": "Rooms",
-        "apt_location": "Location",
-        "apt_price": "Price",
-        "apt_price_w_taxes": "Price w. taxes",
-        "apt_price_w_taxes_n_commission": "Price w.taxes & comm",
-        "apt_price_per_sqm": "Price / sqm",
-        "ad_link": "Link",
-        "ad_published_date": "Published date",
-        "ad_seller_type": "Seller",
-        "ad_is_boosted": "Boosted"}
-
-df_results = df.loc[:,datatable_cols] \
-    .sort_values(by = "apt_price_per_sqm", ascending = True) \
-    .rename(columns = rename_mapping) \
-    .reset_index(drop = True)
-
-# MAIN PAGE RESULTS ------------------------------------------------------------------
+# Main page
 
 st.markdown('# Apartment search Lyon')
 st.write('👈 Please use the form in the sidebar to filter results')
 st.markdown(f"Last data update: `{get_last_data_update()}`")
 st.markdown(f"***")
 
-# st.dataframe(df_results, width = 1080)
+total_results = len(st.session_state["ad_data_local"])
+results_per_page = 5
+total_pages = math.ceil(total_results / results_per_page)
 
 results_container = st.empty()
-
-total_results = len(df_results)
-results_per_page = 4
-total_pages = math.ceil(total_results / results_per_page)
 
 col1, col2, col3 = st.columns([1,10,1])
 
@@ -536,59 +611,44 @@ with col3:
         st.session_state["display_results_page_number"] += 1
 
 start = st.session_state["display_results_page_number"] * results_per_page
-end = start + results_per_page
-page_result = df_results.loc[start:end]
+end = start + results_per_page - 1
+page_result = st.session_state["ad_data_local"].loc[start:end]
+
 
 with results_container.container():
+    with st.form(key= "sort_options"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.selectbox("Sort by:",
+                (SORT_OPTIONS.keys()),
+                format_func= format_sort_options,
+                key= "sort_option")
+        with col2:
+            st.selectbox("Direction",
+                (SORT_DIRECTION.keys()),
+                format_func= format_sort_direction,
+                key= "sort_direction")
+        with col3:
+            st.form_submit_button(label= "Apply")
+
     st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
-    st.markdown(f"***")
-    # st.plotly_chart(generate_results_on_map(page_result), use_container_width=True)
+    
     st.pydeck_chart(generate_results_on_map(page_result))
     st.markdown(f"***")
     
     for index, row in page_result.iterrows():
-        st.markdown(f"### {row['Name']}")
-        st.markdown(f"Description: {row['Description'][:300]} ...")
-
-        r_col1, r_col2, r_col3 = st.columns([1,1,2])
-        with r_col3:
-            st.markdown(f'Location: `{row["Location"]}`')
-        with r_col2:
-            st.markdown(f'Rooms: `{row["Rooms"]:.0f}`')
-        with r_col1:
-            st.markdown(f'Size: `{row["Size"]:.0f}`')
-
-
-        r_col4, r_col5, r_col6 = st.columns([1,1,2])
-        with r_col4:
-            st.markdown(f'Price: `{row["Price"]:,}`')
-        with r_col5:
-            st.markdown(f'Price w: taxes: `{row["Price w. taxes"]:,}`')
-        with r_col6:
-            st.markdown(f'Price w. taxes & comm: `{row["Price w.taxes & comm"]:,}`')
-
-        st.markdown(f'Price per sqm: `{row["Price / sqm"]:,}`')
-
-        st.markdown(row["Link"])
-
-        r_col7, r_col8, r_col9 = st.columns([1,1,2])
-        with r_col9:
-            st.markdown(f'Ad publish date: {row["Published date"]}')
-        with r_col8:
-            st.markdown(f'Seller type: {row["Seller"]}')
-        with r_col7:
-            st.markdown(f'Boosted ad: {row["Boosted"]}')
-
-        st.markdown(f"***")
+        generate_result_entry(index, row)
 
     st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
 
 st.markdown('## Market analysis')
 st.markdown('### Filtered data analysis')
-generate_market_analysis(df)
+generate_market_analysis()
+
+st.markdown('## Kolmogorov Smirnov test')
+run_Kolmogorov_Smirnov_test()
 
 if st.session_state["show_global_analysis"]:
     st.markdown('### Global data analysis')
-    global_data, global_table_cols = get_data(time_horizon = 365)
-    global_df = run_data_pipeline(global_data, global_table_cols)
-    generate_market_analysis(global_df, scope = "global")
+    run_data_pipeline(scope = "global")
+    generate_market_analysis(scope = "global")
