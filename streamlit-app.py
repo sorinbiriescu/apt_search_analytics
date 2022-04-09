@@ -1,21 +1,15 @@
-from cProfile import label
-from pyparsing import col
 import streamlit as st
 from pg8000.exceptions import DatabaseError
 from  pg8000.native import Connection
 import datetime as DT
 import pandas as pd
 import logging
-import plotly.graph_objects as go
 import sklearn.cluster as cluster
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 import altair as alt
-import webbrowser
-import time
 import math
 import pydeck as pdk
 from pydeck.types import String
-import io
 from scipy import stats
 
 platform = st.secrets.get('PLATFORM')
@@ -68,7 +62,8 @@ def get_unique_locations(request_date = DT.date.today().strftime("%Y-%m-%d")):
 
     try:
         result = conn.run(
-            f"""SELECT DISTINCT apt_location FROM {table_name}
+            f"""SELECT DISTINCT apt_location_postal_code
+            FROM {table_name}
             """
             )
 
@@ -85,34 +80,32 @@ def get_unique_locations(request_date = DT.date.today().strftime("%Y-%m-%d")):
 @st.cache(suppress_st_warning=True)
 def get_data(location = None,
                 request_date = DT.date.today().strftime("%Y-%m-%d"),
-                time_horizon = 3,
+                start_date = None,
                 min_price = None,
                 max_price = None,
                 min_apt_size = None,
                 max_apt_size = None
                 ):
-
-    date_lt_T = (DT.datetime.now() - DT.timedelta(days = time_horizon)).strftime("%Y-%m-%d")
  
-    table_name = environment + ".apt_ads_data"
+    table_name = f"{environment}.apt_ads_data"
     table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces",
-        "apt_nb_bedrooms", "apt_location", "apt_location_lat", "apt_location_long",
+        "apt_nb_bedrooms", "apt_location_name", "apt_location_postal_code", "apt_location_lat", "apt_location_long",
         "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted",
         "ad_source", "ad_scraping_date"]
     
-    query_stmt = f"""SELECT * FROM {table_name}
+    query_stmt = f"""SELECT {",".join(table_cols)} FROM {table_name}
         WHERE ad_published_date >= :start_date
             {["AND apt_price >= :min_price" if min_price else ""][0]}
             {["AND apt_price <= :max_price" if max_price else ""][0]}
             {["AND apt_size >= :min_apt_size" if min_apt_size else ""][0]}
             {["AND apt_size <= :max_apt_size" if max_apt_size else ""][0]}
-            {["AND apt_location = ANY(:location)" if location else ""][0]}
+            {["AND apt_location_postal_code = ANY(:location)" if location else ""][0]}
         """
-
+    
     try:
         result = conn.run(query_stmt,
             table_name = table_name,
-            start_date = date_lt_T,
+            start_date = start_date,
             min_price = min_price,
             max_price = max_price,
             min_apt_size = min_apt_size,
@@ -129,16 +122,19 @@ def get_data(location = None,
 
 
 def clean_data(df):
-    df.drop_duplicates(subset=["ad_name", "apt_location", "apt_price"], inplace= True)
+    df.drop_duplicates(subset=["ad_name", "apt_location_postal_code", "apt_price"], inplace= True)
 
     df["ad_id"] = df["ad_id"].astype("string")
     df["ad_name"] = df["ad_name"].astype("string")
     df["ad_description"] = df["ad_description"].astype("string")
-    df["apt_location"] = df["apt_location"].astype("string")
+    df["apt_location_postal_code"] = df["apt_location_postal_code"].astype("string")
 
-    df["apt_postal_code"] = df["apt_location"].str.extract(r'([0-9]{5})', expand= False)
-    df["apt_postal_code"] = df["apt_postal_code"].astype("category")
-
+    df["apt_nb_pieces"].fillna(0, inplace = True)
+    df["apt_nb_pieces"] = df["apt_nb_pieces"].astype(int)
+    df["apt_nb_bedrooms"].fillna(0, inplace = True)
+    df["apt_nb_bedrooms"] = df["apt_nb_bedrooms"].astype(int)
+    df["apt_price"].fillna(0, inplace = True)
+    df["apt_price"] = df["apt_price"].astype(float)
     
     df["ad_published_date"] = pd.to_datetime(df["ad_published_date"], format = "%Y-%m-%d %H:%M:%S", errors = "coerce").dt.strftime("%Y-%m-%d")
     df["ad_published_date"] = pd.to_datetime(df["ad_published_date"], format = "%Y-%m-%d", errors = "coerce")
@@ -494,7 +490,7 @@ def rename_columns(df):
         "ad_description": "Description",
         "apt_size": "Size",
         "apt_nb_pieces": "Rooms",
-        "apt_location": "Location",
+        "apt_location_name": "Location",
         "apt_price": "Price",
         "apt_price_w_taxes": "Price w. taxes",
         "apt_price_w_taxes_n_commission": "Price w.taxes & comm",
@@ -512,9 +508,9 @@ def reset_index(df):
 
 
 def run_data_pipeline(scope = "local"):
-    time_hor = [3 if scope == "local" else 365][0]
+    time_hor = [st.session_state["start_date"] if scope == "local" else DT.datetime.now() - DT.timedelta(days = 365)][0]
 
-    data, data_cols = get_data(time_horizon = time_hor,
+    data, data_cols = get_data(start_date = time_hor,
         min_price = int(st.session_state["price"][0]),
         max_price = int(st.session_state["price"][1]),
         min_apt_size = int(st.session_state["apt_size"][0]),
@@ -555,6 +551,10 @@ def format_sort_direction(option):
 with st.form(key = "filter_criteria"):
     with st.sidebar:
         st.markdown('# Filters')
+        st.date_input(
+            "Ads since publish date",
+            DT.datetime.now() - DT.timedelta(days = 3),
+            key = "start_date")
         start_price_slider, end_price_slider = st.select_slider('Apartment Price',
             options=[price for price in range(0,525000,25000)],
             key = "price",
@@ -580,28 +580,6 @@ with st.form(key = "filter_criteria"):
                         default = location_list,
                         key = "locations"
                         )
-
-        st.markdown("***")
-        st.checkbox('Show filtered results analysis', key= "show_local_analysis", value = False)
-        st.number_input("# of groups - local",
-            key = "nb_clusters_local",
-            min_value = 0,
-            max_value = 15,
-            format = "%i",
-            value = 5)
-        st.checkbox('Show cluster elbow chart',
-            key= "show_elbow_chart", value = False)
-
-        st.markdown("***")
-        st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
-        st.number_input("# of groups - global",
-            key = "nb_clusters_global",
-            min_value = 0,
-            max_value = 15,
-            format = "%i",
-            value = 5)
-        
-        
 
         submit = st.form_submit_button(label="Submit", help=None)   
 
@@ -664,18 +642,38 @@ with results_container.container():
 
     st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
 
+st.markdown("***")
+st.checkbox('Show filtered results analysis', key= "show_local_analysis", value = False)
+st.number_input("# of groups - local",
+    key = "nb_clusters_local",
+    min_value = 0,
+    max_value = 15,
+    format = "%i",
+    value = 5)
+st.checkbox('Show cluster elbow chart',
+    key= "show_elbow_chart", value = False)
+
 if st.session_state["show_local_analysis"]:
     st.markdown('## Market analysis')
     st.markdown('### Filtered data analysis')
     generate_market_analysis()
 
+st.markdown("***")
+st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
+st.number_input("# of groups - global",
+    key = "nb_clusters_global",
+    min_value = 0,
+    max_value = 15,
+    format = "%i",
+    value = 5)
+
 if st.session_state["show_global_analysis"]:
-    st.markdown('### Global data analysis')
+    st.markdown('## Global data analysis')
     run_data_pipeline(scope = "global")
     generate_market_analysis(scope = "global")
 
-    st.markdown('## Kolmogorov Smirnov test')
+    st.markdown('### Kolmogorov Smirnov test')
     run_Kolmogorov_Smirnov_test()
 
-    st.markdown('## Price distributions')
+    st.markdown('### Price distributions')
     show_price_distributions()
