@@ -269,7 +269,7 @@ def run_Kolmogorov_Smirnov_test():
     return
 
 
-def show_price_distributions():
+def generate_price_distributions():
     data = st.session_state["ad_data_global"]
     data['apt_size_bins'] = pd.cut( x = data['Size'], bins=[0, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 300, 400, 500])
     data = data.loc[:, ("apt_size_bins", "Price / sqm", "Seller")] \
@@ -281,11 +281,21 @@ def show_price_distributions():
     data["apt_size_bins"] = data["apt_size_bins"].astype("string")
     data["Seller"] = data["Seller"].astype("string")
 
+    # chart = alt.Chart(data).mark_bar().encode(
+    #     x = alt.X('Seller:O'),
+    #     y = 'Price / sqm:Q',
+    #     color = 'Seller:N',
+    #     column = alt.Column('apt_size_bins:N', 
+    #         sort = data["apt_size_bins"].tolist()
+    #         )
+    #     )
+
     chart = alt.Chart(data).mark_bar().encode(
         x = alt.X('Seller:O'),
         y = 'Price / sqm:Q',
         color = 'Seller:N',
-        column = alt.Column('apt_size_bins:N', 
+        facet = alt.Facet('apt_size_bins:N', 
+            columns= 4,
             sort = data["apt_size_bins"].tolist()
             )
         )
@@ -409,16 +419,23 @@ def create_distr_chart(data, bin_name, group_name):
 
 
 def generate_market_analysis(scope = "local"):
-    if scope == "local":
-        k = st.session_state["nb_clusters_local"]
-        data = st.session_state["ad_data_local"]
-    else:
-        k = st.session_state["nb_clusters_global"]
-        data = st.session_state["ad_data_global"]
+    st.number_input("# of groups - local",
+        key = f"nb_clusters_{scope}",
+        min_value = 0,
+        max_value = 15,
+        format = "%i",
+        value = 5)
+    st.checkbox('Show cluster elbow chart',
+        key= f"show_elbow_chart_{scope}", value = False)
+
+    k = st.session_state[f"nb_clusters_{scope}"]
+    data = st.session_state[f"ad_data_{scope}"]
 
     data = create_price_bins(data)
 
-    cluster_chart, elbow_chart = generate_cluster_chart(data, k ,show_elbow= st.session_state["show_elbow_chart"])
+
+    cluster_chart, elbow_chart = generate_cluster_chart(data, k ,show_elbow= st.session_state[f"show_elbow_chart_{scope}"])
+
 
     if cluster_chart:
         st.altair_chart(cluster_chart, use_container_width=True)
@@ -590,69 +607,64 @@ run_data_pipeline()
 st.markdown('# Apartment search Lyon')
 st.write('👈 Please use the form in the sidebar to filter results')
 st.markdown(f"Last data update: `{get_last_data_update()}`")
+total_results = len(st.session_state["ad_data_local"])
+st.markdown(f'Total results: `{total_results}`')
 st.markdown(f"***")
 
-total_results = len(st.session_state["ad_data_local"])
-results_per_page = 5
-total_pages = math.ceil(total_results / results_per_page)
+st.checkbox('Show results', key= "show_filtered_results", value = True)
+if st.session_state["show_filtered_results"]:
+    total_results = len(st.session_state["ad_data_local"])
+    results_per_page = 5
+    total_pages = math.ceil(total_results / results_per_page)
 
-results_container = st.empty()
+    results_container = st.empty()
 
-col1, col2, col3 = st.columns([1,10,1])
+    col1, col2, col3 = st.columns([1,10,1])
 
-if "display_results_page_number" not in st.session_state:
-    st.session_state['display_results_page_number'] = 0
+    if "display_results_page_number" not in st.session_state:
+        st.session_state['display_results_page_number'] = 0
 
-with col1:
-    if st.button("Previous"):
-        st.session_state["display_results_page_number"] -= 1
+    with col1:
+        if st.button("Previous"):
+            st.session_state["display_results_page_number"] -= 1
 
-with col3:
-    if st.button("Next"):
-        st.session_state["display_results_page_number"] += 1
+    with col3:
+        if st.button("Next"):
+            st.session_state["display_results_page_number"] += 1
 
-start = st.session_state["display_results_page_number"] * results_per_page
-end = start + results_per_page - 1
-page_result = st.session_state["ad_data_local"].loc[start:end]
+    start = st.session_state["display_results_page_number"] * results_per_page
+    end = start + results_per_page - 1
+    page_result = st.session_state["ad_data_local"].loc[start:end]
 
 
-with results_container.container():
-    with st.form(key= "sort_options"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.selectbox("Sort by:",
-                (SORT_OPTIONS.keys()),
-                format_func= format_sort_options,
-                key= "sort_option")
-        with col2:
-            st.selectbox("Direction",
-                (SORT_DIRECTION.keys()),
-                format_func= format_sort_direction,
-                key= "sort_direction")
-        with col3:
-            st.form_submit_button(label= "Apply")
+    with results_container.container():
+        with st.form(key= "sort_options"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.selectbox("Sort by:",
+                    (SORT_OPTIONS.keys()),
+                    format_func= format_sort_options,
+                    key= "sort_option")
+            with col2:
+                st.selectbox("Direction",
+                    (SORT_DIRECTION.keys()),
+                    format_func= format_sort_direction,
+                    key= "sort_direction")
+            with col3:
+                st.form_submit_button(label= "Apply")
 
-    st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
-    
-    st.pydeck_chart(generate_results_on_map(page_result))
-    st.markdown(f"***")
-    
-    for index, row in page_result.iterrows():
-        generate_result_entry(index, row)
+        st.markdown(f'Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
+        
+        st.pydeck_chart(generate_results_on_map(page_result))
+        st.markdown(f"***")
+        
+        for index, row in page_result.iterrows():
+            generate_result_entry(index, row)
 
-    st.markdown(f'Total results: **{total_results}** - Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
+        st.markdown(f'Showing page **{st.session_state["display_results_page_number"]+1}** of total **{total_pages+1}** pages')
 
 st.markdown("***")
-st.checkbox('Show filtered results analysis', key= "show_local_analysis", value = False)
-st.number_input("# of groups - local",
-    key = "nb_clusters_local",
-    min_value = 0,
-    max_value = 15,
-    format = "%i",
-    value = 5)
-st.checkbox('Show cluster elbow chart',
-    key= "show_elbow_chart", value = False)
-
+st.checkbox('Show market analysis on filtered results', key= "show_local_analysis", value = False)
 if st.session_state["show_local_analysis"]:
     st.markdown('## Market analysis')
     st.markdown('### Filtered data analysis')
@@ -660,20 +672,12 @@ if st.session_state["show_local_analysis"]:
 
 st.markdown("***")
 st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
-st.number_input("# of groups - global",
-    key = "nb_clusters_global",
-    min_value = 0,
-    max_value = 15,
-    format = "%i",
-    value = 5)
-
 if st.session_state["show_global_analysis"]:
     st.markdown('## Global data analysis')
-    run_data_pipeline(scope = "global")
     generate_market_analysis(scope = "global")
 
     st.markdown('### Kolmogorov Smirnov test')
     run_Kolmogorov_Smirnov_test()
 
     st.markdown('### Price distributions')
-    show_price_distributions()
+    generate_price_distributions()
