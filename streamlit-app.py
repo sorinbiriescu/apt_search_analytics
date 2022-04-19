@@ -83,22 +83,34 @@ def get_ad_data(table_cols = None,
                 location = None,
                 start_date = None,
                 end_date = DT.date.today().strftime("%Y-%m-%d"),
-                min_price = None,
-                max_price = None,
+                min_price = 0,
+                max_price = 9999999,
                 min_apt_size = None,
                 max_apt_size = None
                 ):
 
+    
     logging.info(f"Start date {start_date} end date {end_date}")
     
-    query_stmt = f"""SELECT {[",".join(table_cols) if table_cols else "*"][0]}
-        FROM {environment}.apt_ads_data
-        WHERE ad_published_date BETWEEN :start_date AND :end_date
-            {["AND apt_price >= :min_price" if min_price else ""][0]}
-            {["AND apt_price <= :max_price" if max_price else ""][0]}
-            {["AND apt_size >= :min_apt_size" if min_apt_size else ""][0]}
-            {["AND apt_size <= :max_apt_size" if max_apt_size else ""][0]}
-            {["AND apt_location_postal_code = ANY(:location)" if location else ""][0]}
+    query_stmt = f"""SELECT {[",".join([f'aad.{tname}' for tname in table_cols]) if table_cols else "*"][0]}, last_date_last_price_query.last_price, last_date_last_price_query.last_seen
+        FROM {environment}.apt_ads_data aad
+        INNER JOIN (
+            select aasd.ad_id, aasd.apt_price as last_price, last_date_query.last_seen
+            from {environment}.apt_ads_scraping_duplicate aasd
+            inner join (
+                SELECT ad_id, max(ad_scraping_date) as last_seen
+                    FROM {environment}.apt_ads_scraping_duplicate
+                    WHERE ad_scraping_date BETWEEN :start_date AND :end_date
+                    GROUP BY ad_id
+                    ) as last_date_query 
+            ON aasd.ad_id = last_date_query.ad_id 
+            ) last_date_last_price_query
+        ON aad.ad_id = last_date_last_price_query.ad_id
+        WHERE (aad.apt_price >= :min_price OR last_date_last_price_query.last_price >= :min_price)
+            AND (aad.apt_price <= :max_price OR last_date_last_price_query.last_price <= :max_price)
+            {["AND aad.apt_size >= :min_apt_size" if min_apt_size else ""][0]}
+            {["AND aad.apt_size <= :max_apt_size" if max_apt_size else ""][0]}
+            {["AND aad.apt_location_postal_code = ANY(:location)" if location else ""][0]}
         """
     
     try:
@@ -112,7 +124,9 @@ def get_ad_data(table_cols = None,
             location = [tuple(location) if location else None][0]
             )
 
-        return result
+        table_cols.extend(["last_price", "last_seen"])
+
+        return result, table_cols
 
     except DatabaseError as e:
         logging.critical(f"A error occured: {e}")
@@ -249,13 +263,20 @@ def filter_ppsqm(df, filter):
 
 
 def deduce_apt_size(df):
-    mask_missing_size_price_present = (df["apt_size"].isna() & df["apt_price"].notna() & df["apt_price_per_sqm"].notna())
-    df.loc[mask_missing_size_price_present, ("apt_size")] = round(df["apt_price"] /df["apt_price_per_sqm"],2)
-    df.loc[df["apt_size"].isnull(), ("apt_size")] = df["ad_name"].str.extract(r'([0-9]{2,3}(?=.*M))', expand = False)
-    df["apt_size"] = pd.to_numeric(df["apt_size"], errors = "coerce", downcast = "float")
-    df = df.loc[df["apt_size"] < 400]
+    mask_apt_size_missing = df["apt_size"].isna()
+    if mask_apt_size_missing.any():
+        mask_apt_price_present = df["apt_price"].notna()
+        mask_apt_price_psqm_present = df["apt_price_per_sqm"].notna()
+        
+        df.loc[mask_apt_size_missing & mask_apt_price_present & mask_apt_price_psqm_present, ("apt_size")] = round(df["apt_price"] /df["apt_price_per_sqm"],2)
+        df.loc[df["apt_size"].isnull(), ("apt_size")] = df["ad_name"].str.extract(r'([0-9]{2,3}(?=.*M))', expand = False)
+        df["apt_size"] = pd.to_numeric(df["apt_size"], errors = "coerce", downcast = "float")
+        df = df.loc[df["apt_size"] < 400]
 
-    return df
+        return df
+
+    else:
+        return df
 
 
 def create_price_bins(df):
@@ -384,15 +405,20 @@ def calculate_price_evol_stats(data):
 
     t_crit = np.abs(stats.t.ppf((1-confidence)/2,dof))
     se = s*t_crit/np.sqrt(len(data.index))
+    ci_hi = m + se
+    ci_li = m - se
+    if ci_li:
+        if ci_li < 0:
+            ci_li = 0
 
-    return  pd.Series([m, m - se, m + se, len(data.index)], index=["mean", "ci_li", "ci_hi", "total_records"])
+    return  pd.Series([m, ci_li, ci_hi, len(data.index)], index=["mean", "ci_li", "ci_hi", "total_records"])
 
 
 def generate_price_evolution(time_sample = None):
     data = st.session_state["ad_data_global"]
 
     data = data.loc[~data["ad_seller_type"].isin(["broker", "developer", "mandatary", "network"]),
-        ("apt_location_postal_code", "ad_published_date", "apt_size", "apt_price_per_sqm",)]
+        ("apt_location_postal_code", "last_seen", "apt_size", "apt_price_per_sqm",)]
     data = data.loc[data["apt_price_per_sqm"] >= 1000]
     # data.to_csv("export.csv")
 
@@ -405,9 +431,10 @@ def generate_price_evolution(time_sample = None):
         st.form_submit_button(label= "Apply")
 
     st.markdown(f"#### Between {start_apt_size_slider}$m^2$ and {end_apt_size_slider}$m^2$")
+    
     data = data.loc[data["apt_size"].between(start_apt_size_slider, end_apt_size_slider)] \
         .groupby(["apt_location_postal_code"]) \
-        .resample('M', on = "ad_published_date") \
+        .resample('M', on = "last_seen") \
         .apply(calculate_price_evol_stats) \
         .reset_index()
 
@@ -417,20 +444,20 @@ def generate_price_evolution(time_sample = None):
 
         st.markdown(f"##### Postal code: {index}")
         global_price_evolution_mean = alt.Chart(group).mark_line().encode(
-            x= alt.X("ad_published_date:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
             y= alt.Y("mean:Q", axis = alt.Axis(title = "Mean Price / sqm")),
             color=alt.value("#FFAA00")
             )
 
         global_price_evolution_ci = alt.Chart(group).mark_area().encode(
-            x= alt.X("ad_published_date:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
             y= "ci_li:Q",
             y2= "ci_hi:Q",
             opacity=alt.value(0.6)
             )
 
         global_total_records = alt.Chart(group).mark_bar(size=15).encode(
-            x= alt.X("ad_published_date:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
             y= "total_records:Q",
             ).properties(
                 width = 700,
@@ -563,11 +590,14 @@ def create_distr_chart(data, bin_name, group_name, chart_title):
                 title = chart_title
                 )
 
+def _debug_generate_time(df, step):
+    logging.info(f"Step {step}: time {DT.datetime.now()}")
+    return df
 
 def generate_market_analysis(scope = "local"):
     total_results = len(st.session_state[f"ad_data_{scope}"])
-    start_date = st.session_state[f"ad_data_{scope}"]["ad_published_date"].min().strftime("%d-%m-%Y")
-    end_date = st.session_state[f"ad_data_{scope}"]["ad_published_date"].max().strftime("%d-%m-%Y")
+    start_date = st.session_state[f"ad_data_{scope}"]["last_seen"].min().strftime("%d-%m-%Y")
+    end_date = st.session_state[f"ad_data_{scope}"]["last_seen"].max().strftime("%d-%m-%Y")
     st.write(f'Total data points in the analysis: **{total_results}**, from **{start_date}** to **{end_date}**')
 
     st.number_input("# of groups - local",
@@ -675,14 +705,18 @@ def reset_index(df):
 def add_dvf_data(df):
     return df
 
+def update_with_last_price(df):
+    df.loc[df["last_price"].notna(), ("apt_price")] = df.loc[df["last_price"].notna(), ("last_price")]
+    return df
+
 
 def run_ad_data_pipeline_local_results():
-    table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces",
+    ad_table_cols = ["ad_id", "ad_name", "ad_description", "apt_size", "apt_nb_pieces",
         "apt_nb_bedrooms", "apt_location_name", "apt_location_postal_code", "apt_location_lat", "apt_location_long",
         "apt_price", "ad_link", "ad_published_date", "ad_seller_type", "ad_is_boosted",
         "ad_source", "ad_scraping_date"]
 
-    data = get_ad_data(table_cols= table_cols,
+    data, result_cols = get_ad_data(table_cols= ad_table_cols,
         start_date = st.session_state["start_date"],
         min_price = int(st.session_state["price"][0]),
         max_price = int(st.session_state["price"][1]),
@@ -691,8 +725,9 @@ def run_ad_data_pipeline_local_results():
         location = st.session_state["locations"]
         )
 
-    st.session_state[f"ad_data_local"] = pd.DataFrame(data, columns = table_cols) \
+    st.session_state[f"ad_data_local"] = pd.DataFrame(data, columns = result_cols) \
         .pipe(clean_ad_data) \
+        .pipe(update_with_last_price) \
         .pipe(add_taxes_to_price) \
         .pipe(add_ppsqm) \
         .pipe(filter_ppsqm, st.session_state["ppsqm"]) \
@@ -708,7 +743,7 @@ def align_dvf_column_names(df):
     RENAME_MAPPING = {"sell_value": "apt_price",
                      "carrez_surface": "apt_size",
                      "postal_code": "apt_location_postal_code",
-                     "date_of_transaction": "ad_published_date"}
+                     "date_of_transaction": "last_seen"}
 
     return df.rename(columns = RENAME_MAPPING)
 
@@ -719,9 +754,9 @@ def merge_ad_dvf_data(df, dvf_df):
 
 def run_ad_data_pipeline_global_analysis():
     ad_table_cols = ["ad_id", "ad_name","apt_size", "apt_nb_pieces", "apt_location_postal_code",
-        "apt_price", "ad_published_date", "ad_seller_type", "ad_is_boosted",]
+        "apt_price", "ad_published_date", "ad_seller_type", "ad_is_boosted"]
 
-    ad_data = get_ad_data(table_cols= ad_table_cols,
+    ad_data, result_cols = get_ad_data(table_cols= ad_table_cols,
         start_date = DT.datetime.now().date() - DT.timedelta(days = 365)
         )
 
@@ -737,7 +772,8 @@ def run_ad_data_pipeline_global_analysis():
         .pipe(align_dvf_column_names)
 
 
-    st.session_state[f"ad_data_global"] = pd.DataFrame(ad_data, columns = ad_table_cols) \
+    st.session_state[f"ad_data_global"] = pd.DataFrame(ad_data, columns = result_cols) \
+        .pipe(update_with_last_price) \
         .pipe(merge_ad_dvf_data, dvf_df = dvf_df) \
         .pipe(clean_ad_data) \
         .pipe(add_taxes_to_price) \
