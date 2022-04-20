@@ -86,33 +86,37 @@ def get_ad_data(table_cols = None,
                 min_price = 0,
                 max_price = 9999999,
                 min_apt_size = None,
-                max_apt_size = None
+                max_apt_size = None,
+                min_nb_rooms = None,
+                max_nb_rooms = None
                 ):
 
     
     logging.info(f"Start date {start_date} end date {end_date}")
-    
-    query_stmt = f"""SELECT {[",".join([f'aad.{tname}' for tname in table_cols]) if table_cols else "*"][0]}, last_date_last_price_query.last_price, last_date_last_price_query.last_seen
-        FROM {environment}.apt_ads_data aad
-        INNER JOIN (
-            select aasd.ad_id, aasd.apt_price as last_price, last_date_query.last_seen
-            from {environment}.apt_ads_scraping_duplicate aasd
-            inner join (
-                SELECT ad_id, max(ad_scraping_date) as last_seen
-                    FROM {environment}.apt_ads_scraping_duplicate
-                    WHERE ad_scraping_date BETWEEN :start_date AND :end_date
-                    GROUP BY ad_id
-                    ) as last_date_query 
-            ON aasd.ad_id = last_date_query.ad_id 
-            ) last_date_last_price_query
-        ON aad.ad_id = last_date_last_price_query.ad_id
-        WHERE (aad.apt_price >= :min_price OR last_date_last_price_query.last_price >= :min_price)
-            AND (aad.apt_price <= :max_price OR last_date_last_price_query.last_price <= :max_price)
+
+    query_stmt = f"""WITH last_seen as (
+        SELECT ad_id, max(ad_scraping_date) as last_date
+        FROM prod.apt_ads_scraping_duplicate
+        WHERE ad_scraping_date BETWEEN :start_date AND :end_date
+        GROUP BY ad_id
+        )
+
+        SELECT {[",".join([f'aad.{tname}' for tname in table_cols]) if table_cols else "*"][0]}, aasd.apt_price, last_seen.last_date
+        FROM prod.apt_ads_data aad
+        RIGHT JOIN last_seen 
+            ON aad.ad_id = last_seen.ad_id 
+        LEFT JOIN prod.apt_ads_scraping_duplicate aasd
+            ON aad.ad_id = aasd.ad_id
+            AND aasd.ad_scraping_date = last_seen.last_date
+        WHERE (aad.apt_price >= :min_price OR aasd.apt_price >= :min_price)
+            AND (aad.apt_price <= :max_price OR aasd.apt_price <= :max_price)
             {["AND aad.apt_size >= :min_apt_size" if min_apt_size else ""][0]}
             {["AND aad.apt_size <= :max_apt_size" if max_apt_size else ""][0]}
+            {["AND aad.apt_nb_pieces >= :min_nb_rooms" if min_nb_rooms else ""][0]}
+            {["AND aad.apt_nb_pieces <= :max_nb_rooms" if max_nb_rooms else ""][0]}
             {["AND aad.apt_location_postal_code = ANY(:location)" if location else ""][0]}
-        """
-    
+            """
+
     try:
         result = conn.run(query_stmt,
             start_date = start_date,
@@ -121,6 +125,8 @@ def get_ad_data(table_cols = None,
             max_price = max_price,
             min_apt_size = min_apt_size,
             max_apt_size = max_apt_size,
+            min_nb_rooms = min_nb_rooms,
+            max_nb_rooms = max_nb_rooms,
             location = [tuple(location) if location else None][0]
             )
 
@@ -670,16 +676,22 @@ def generate_result_entry(index, row):
         with r_col6:
             st.markdown(f'Price w. taxes & comm: `{row["Price w.taxes & comm"]:,}`')
 
-        st.markdown(f'Price per sqm: `{row["Price / sqm"]:,}`')
+        r_col7, r_col8, r_col9 = st.columns([1,1,2])
+        with r_col7:
+            st.markdown(f'Price per sqm: `{row["Price / sqm"]:,}`')
+        with r_col8:
+            st.markdown(f'First price: `{row["first_price"]:,}`')
+        with r_col9:
+            st.markdown(f'Price difference: `{row["price_delta"]:,}`')
 
         st.markdown(row["Link"])
 
-        r_col7, r_col8, r_col9 = st.columns([1,1,2])
-        with r_col9:
+        r_col10, r_col11, r_col12 = st.columns([1,1,2])
+        with r_col12:
             st.markdown(f'Ad publish date: **{row["Published date"]}**')
-        with r_col8:
+        with r_col11:
             st.markdown(f'Seller type: **{row["Seller"]}**')
-        with r_col7:
+        with r_col10:
             st.markdown(f'Boosted ad: **{row["Boosted"]}**')
 
         st.markdown(f"***")
@@ -705,7 +717,9 @@ def reset_index(df):
 def add_dvf_data(df):
     return df
 
-def update_with_last_price(df):
+def calculate_price_delta(df):
+    df["first_price"] = df["apt_price"]
+    df["price_delta"] = df["apt_price"] - df["last_price"]
     df.loc[df["last_price"].notna(), ("apt_price")] = df.loc[df["last_price"].notna(), ("last_price")]
     return df
 
@@ -722,12 +736,14 @@ def run_ad_data_pipeline_local_results():
         max_price = int(st.session_state["price"][1]),
         min_apt_size = int(st.session_state["apt_size"][0]),
         max_apt_size = int(st.session_state["apt_size"][1]),
+        min_nb_rooms = int(st.session_state["nb_rooms"][0]),
+        max_nb_rooms = int(st.session_state["nb_rooms"][1]),
         location = st.session_state["locations"]
         )
 
     st.session_state[f"ad_data_local"] = pd.DataFrame(data, columns = result_cols) \
         .pipe(clean_ad_data) \
-        .pipe(update_with_last_price) \
+        .pipe(calculate_price_delta) \
         .pipe(add_taxes_to_price) \
         .pipe(add_ppsqm) \
         .pipe(filter_ppsqm, st.session_state["ppsqm"]) \
@@ -773,7 +789,7 @@ def run_ad_data_pipeline_global_analysis():
 
 
     st.session_state[f"ad_data_global"] = pd.DataFrame(ad_data, columns = result_cols) \
-        .pipe(update_with_last_price) \
+        .pipe(calculate_price_delta) \
         .pipe(merge_ad_dvf_data, dvf_df = dvf_df) \
         .pipe(clean_ad_data) \
         .pipe(add_taxes_to_price) \
@@ -789,7 +805,8 @@ SORT_OPTIONS = {"apt_price_per_sqm": "Price per sqm",
         "apt_price":"Apt. price",
         "apt_price_w_taxes": "Apt. price with taxes",
         "apt_size": "Apartment size",
-        "ad_published_date": "Date posted"}
+        "ad_published_date": "Date posted",
+        "price_delta": "Price difference"}
 
 SORT_DIRECTION = {True: "Ascending",
     False: "Descending"}
@@ -808,8 +825,8 @@ with st.form(key = "filter_criteria"):
     with st.sidebar:
         st.markdown('# Filters')
         st.date_input(
-            "Ads since publish date",
-            DT.datetime.now() - DT.timedelta(days = 3),
+            "Active ads since date",
+            DT.datetime.now() - DT.timedelta(days = 7),
             key = "start_date")
         start_price_slider, end_price_slider = st.select_slider('Apartment Price',
             options=[price for price in range(0,525000,25000)],
@@ -827,6 +844,12 @@ with st.form(key = "filter_criteria"):
             options=[size for size in range(0, 305, 5)],
             key = "apt_size",
             value = [0, 300]
+            )
+
+        start_nb_rooms_slider, end_nb_rooms_slider = st.select_slider('Number of rooms',
+            options=[size for size in range(0, 11, 1)],
+            key = "nb_rooms",
+            value = [0, 10]
             )
 
         location_list = get_unique_locations()
