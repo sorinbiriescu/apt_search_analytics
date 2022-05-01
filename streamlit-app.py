@@ -394,8 +394,8 @@ def generate_price_distributions():
     data["ad_seller_type"] = data["ad_seller_type"].astype("string")
 
     return alt.Chart(data).mark_bar().encode(
-        x = alt.X('ad_seller_type:O'),
-        y = 'apt_price_per_sqm',
+        x = alt.X('ad_seller_type:O', axis = alt.Axis(title = "Seller type")),
+        y = alt.Y('apt_price_per_sqm:Q', axis = alt.Axis(title = "Price / sqm")),
         color = 'ad_seller_type:N',
         facet = alt.Facet('apt_size_bins:N', 
             columns= 4,
@@ -404,7 +404,7 @@ def generate_price_distributions():
         )
 
 def calculate_price_evol_stats(data):
-    m = data["apt_price_per_sqm"].mean() 
+    m = round(data["apt_price_per_sqm"].mean(),0)
     s = data["apt_price_per_sqm"].std() 
     dof = len(data.index)-1 
     confidence = 0.95
@@ -424,7 +424,7 @@ def generate_price_evolution(time_sample = None):
     data = st.session_state["ad_data_global"]
 
     data = data.loc[~data["ad_seller_type"].isin(["broker", "developer", "mandatary", "network"]),
-        ("apt_location_postal_code", "last_seen", "apt_size", "apt_price_per_sqm",)]
+        ("apt_location_postal_code", "last_seen", "apt_size", "apt_price_per_sqm", "record_type")]
     data = data.loc[data["apt_price_per_sqm"] >= 1000]
     # data.to_csv("export.csv")
 
@@ -439,10 +439,13 @@ def generate_price_evolution(time_sample = None):
     st.markdown(f"#### Between {start_apt_size_slider}$m^2$ and {end_apt_size_slider}$m^2$")
     
     data = data.loc[data["apt_size"].between(start_apt_size_slider, end_apt_size_slider)] \
-        .groupby(["apt_location_postal_code"]) \
+        .groupby(["apt_location_postal_code", "record_type"]) \
         .resample('M', on = "last_seen") \
         .apply(calculate_price_evol_stats) \
         .reset_index()
+
+    domain = ['ads', 'dvf']
+    range_ = ['#3498db', '#27ae60']
 
     for index, group in data.groupby(["apt_location_postal_code"]):
         if len(group.index) <= 1:
@@ -450,33 +453,50 @@ def generate_price_evolution(time_sample = None):
 
         st.markdown(f"##### Postal code: {index}")
         global_price_evolution_mean = alt.Chart(group).mark_line().encode(
-            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
-            y= alt.Y("mean:Q", axis = alt.Axis(title = "Mean Price / sqm")),
-            color=alt.value("#FFAA00")
+            x = alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            y = alt.Y("mean:Q", axis = alt.Axis(title = "Mean Price / sqm")),
+            color = alt.Color('record_type', scale=alt.Scale(domain=domain, range=range_))
             )
 
+        global_price_evolution_mean_text = global_price_evolution_mean.mark_text(baseline = 'middle', dy = -10).encode(
+            text = 'mean:Q',
+            color = alt.value("#000000"),
+        )
+
         global_price_evolution_ci = alt.Chart(group).mark_area().encode(
-            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
-            y= "ci_li:Q",
-            y2= "ci_hi:Q",
-            opacity=alt.value(0.6)
+            x = alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            y = "ci_li:Q",
+            y2 = "ci_hi:Q",
+            color = alt.Color('record_type', scale=alt.Scale(domain=domain, range=range_)),
+            opacity = alt.value(0.6)
             )
 
         global_total_records = alt.Chart(group).mark_bar(size=15).encode(
-            x= alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
-            y= "total_records:Q",
+            x = alt.X("last_seen:O", timeUnit='utcyearmonth', axis = alt.Axis(title = "Date")),
+            y = alt.Y("total_records:Q", axis = alt.Axis(title = "Total records")),
+            color = "record_type:N"
             ).properties(
                 width = 700,
                 height = 100
             )
 
-        price_evol_chart = global_price_evolution_ci + global_price_evolution_mean
-        price_evol_chart = price_evol_chart.properties(
+        global_total_records_text = global_total_records.mark_text(baseline='middle', dy = -10).encode(
+            text = 'total_records:Q',
+            color = alt.value("#000000"),
+        )
+
+        price_evol_composed_chart = global_price_evolution_ci + \
+            global_price_evolution_mean + \
+            global_price_evolution_mean_text                        
+
+        price_evol_composed_chart = price_evol_composed_chart.properties(
                                         width = 700,
                                         height = 400
                                     )
 
-        result_chart = price_evol_chart & global_total_records
+        total_records_composed_chart = global_total_records + global_total_records_text
+
+        result_chart = price_evol_composed_chart & total_records_composed_chart
 
         with st.container():
             st.altair_chart(result_chart, use_container_width= True)
@@ -767,6 +787,9 @@ def align_dvf_column_names(df):
 def merge_ad_dvf_data(df, dvf_df):
     return pd.concat([df, dvf_df]).reset_index()
 
+def add_record_type(df, value):
+    df["record_type"] = value
+    return df
 
 def run_ad_data_pipeline_global_analysis():
     ad_table_cols = ["ad_id", "ad_name","apt_size", "apt_nb_pieces", "apt_location_postal_code",
@@ -776,7 +799,6 @@ def run_ad_data_pipeline_global_analysis():
         start_date = DT.datetime.now().date() - DT.timedelta(days = 365)
         )
 
-
     dvf_table_cols = ["date_of_transaction", "sell_value", "postal_code", "real_build_surface",
         "carrez_surface", "rooms_number"]
 
@@ -785,11 +807,12 @@ def run_ad_data_pipeline_global_analysis():
         )
 
     dvf_df = pd.DataFrame(dvf_data, columns = dvf_data_cols) \
-        .pipe(align_dvf_column_names)
-
+        .pipe(align_dvf_column_names) \
+        .pipe(add_record_type, "dvf")
 
     st.session_state[f"ad_data_global"] = pd.DataFrame(ad_data, columns = result_cols) \
         .pipe(calculate_price_delta) \
+        .pipe(add_record_type, "ads") \
         .pipe(merge_ad_dvf_data, dvf_df = dvf_df) \
         .pipe(clean_ad_data) \
         .pipe(add_taxes_to_price) \
@@ -867,11 +890,33 @@ run_ad_data_pipeline_local_results()
 # Main page
 
 st.markdown('# Apartment search Lyon')
-st.markdown("""Hi, my name is [Sorin](https://www.linkedin.com/in/sorinbiriescu/) and I made this to 1. help me
-    with my current search for an appartment in Lyon by using data to get the best price to value, 2. develop
-    new analytical, statistical analysis and machine learning skills through a practical project and 3. not a
-    huge fan of constantly being served with ads for overpriced claustrophobic new developments. 
-    """)
+st.markdown("""👋 Hi, my name is [Sorin](https://www.linkedin.com/in/sorinbiriescu/). \
+I made this to help me with my current search for an apartment in Lyon by using \
+data to get the best price to value ratio, showcase and develop new analytical, \
+statistical analysis and machine learning skills through a practical project. Also, \
+I'm not a huge fan of constantly being served with ads for overpriced claustrophobic \
+new developments 🙄. I want to be in charge of what data I see in front of my eyes. 
+
+The project has 3 main parts:
+1. Filtering and showing results with info and new features (such as price evolution)
+2. Analysis of filtered results for quick overview of price distribution, \
+    total count etc.
+3. Global analysis which takes all the data in the DB \
+    in order to produce long-term analytics, such as price evolution in \
+    a particular zone with confidence intervals and testing different hypothesis \
+    (is an apartment sold by an agency more expensive than one sold by a \
+    private individual ? etc.).
+
+The last two need to be activated manually by selecting the checkbox before \
+the section, like **Show results** below. This is done to avoid unnecessary \
+calculations when not needed.
+
+Please note that the scope of this project is limited, mostly to help me \
+get an aproximate idea of what's going on in the market right now and to put in practice\
+what I learned. This is by no means intended to be an exhaustive tool / analysis.
+
+If you want to get in touch with me, drop me a message at sorin.biriescu@gmail.com
+""")
 st.write('👈 Please use the form in the sidebar to filter results')
 st.markdown(f"Last data update: `{get_last_data_update()}`")
 st.markdown(f"***")
@@ -969,10 +1014,13 @@ if st.session_state["show_global_analysis"]:
     st.altair_chart(generate_price_distributions())
 
     st.markdown('### Price evolution')
-    st.markdown("""As the price is very different from zone to zone (ex: zones closer to the
-        edge of the city compared to posh areas, the price evolution is best to be presented
-        per apartment size class and postal code).
-        Prices do not contain ads from developers, brokers and networks, as they seem overall
-        higher than the 'old' buildings."""
+    st.markdown("""As the price is very different from zone to zone (ex: zones closer to the \
+edge of the city compared to posh areas, the price evolution is best to be presented \
+per apartment size class and postal code). \
+
+Prices do not contain ads from developers, brokers and networks, as they seem overall \
+higher than the 'old' buildings."""
         )
     generate_price_evolution(time_sample = "weekly")
+
+st.image('https://www.google-analytics.com/collect?v=1&tid=G-VWH1WBN99V&cid=555&aip=1&t=event&ec=email&ea=open&dp=dev&dt=DEV%20Site')
