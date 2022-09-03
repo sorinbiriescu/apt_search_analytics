@@ -3,6 +3,5 @@ streamlit
 numpy
 pandas
 scikit-learn
-pydeck
 scipy
 pg8000

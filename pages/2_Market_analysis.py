@@ -1,6 +1,6 @@
 import streamlit as st
 from Apartment_list import run_Kolmogorov_Smirnov_test, run_ad_data_pipeline_global_analysis, generate_market_analysis, \
-    run_Kolmogorov_Smirnov_test, generate_price_distributions, generate_price_evolution
+    generate_price_distributions, generate_price_evolution
 
 st.markdown('## Global data analysis')
 st.markdown("The global data analysis is run on a time horizon of 365 days, \
