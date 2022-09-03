@@ -51,7 +51,6 @@ libgfortran5~=11.2.0
 libgomp~=11.2.0
 libstdcxx-ng~=11.2.0
 libuuid~=1.0.3
-libxml2~=2.9.14~=h74e7548_0
 libxslt~=1.1.35~=h4e12654_0
 lxml~=4.9.1
 markupsafe~=2.1.1
