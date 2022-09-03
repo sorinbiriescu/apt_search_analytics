@@ -890,33 +890,6 @@ run_ad_data_pipeline_local_results()
 # Main page
 
 st.markdown('# Apartment search Lyon')
-st.markdown("""👋 Hi, my name is [Sorin](https://www.linkedin.com/in/sorinbiriescu/). \
-I made this to help me with my current search for an apartment in Lyon by using \
-data to get the best price to value ratio, showcase and develop new analytical, \
-statistical analysis and machine learning skills through a practical project. Also, \
-I'm not a huge fan of constantly being served with ads for overpriced claustrophobic \
-new developments 🙄. I want to be in charge of what data I see in front of my eyes. 
-
-The project has 3 main parts:
-1. Filtering and showing results with info and new features (such as price evolution)
-2. Analysis of filtered results for quick overview of price distribution, \
-    total count etc.
-3. Global analysis which takes all the data in the DB \
-    in order to produce long-term analytics, such as price evolution in \
-    a particular zone with confidence intervals and testing different hypothesis \
-    (is an apartment sold by an agency more expensive than one sold by a \
-    private individual ? etc.).
-
-The last two need to be activated manually by selecting the checkbox before \
-the section, like **Show results** below. This is done to avoid unnecessary \
-calculations when not needed.
-
-Please note that the scope of this project is limited, mostly to help me \
-get an aproximate idea of what's going on in the market right now and to put in practice\
-what I learned. This is by no means intended to be an exhaustive tool / analysis.
-
-If you want to get in touch with me, drop me a message at sorin.biriescu@gmail.com
-""")
 st.write('👈 Please use the form in the sidebar to filter results')
 st.markdown(f"Last data update: `{get_last_data_update()}`")
 st.markdown(f"***")
@@ -997,30 +970,3 @@ if st.session_state["show_local_analysis"]:
     st.markdown('## Market analysis')
     st.markdown('### Filtered data analysis')
     generate_market_analysis()
-
-st.markdown("***")
-st.checkbox('Show global analysis', key= "show_global_analysis", value = False)
-if st.session_state["show_global_analysis"]:
-    st.markdown('## Global data analysis')
-    st.markdown("The global data analysis is run on a time horizon of 365 days, \
-        regardless of the filters selected locally.")
-    run_ad_data_pipeline_global_analysis()
-    generate_market_analysis(scope = "global")
-
-    st.markdown('### Kolmogorov Smirnov test')
-    run_Kolmogorov_Smirnov_test()
-
-    st.markdown('### Price distributions')
-    st.altair_chart(generate_price_distributions())
-
-    st.markdown('### Price evolution')
-    st.markdown("""As the price is very different from zone to zone (ex: zones closer to the \
-edge of the city compared to posh areas, the price evolution is best to be presented \
-per apartment size class and postal code). \
-
-Prices do not contain ads from developers, brokers and networks, as they seem overall \
-higher than the 'old' buildings."""
-        )
-    generate_price_evolution(time_sample = "weekly")
-
-st.image('https://www.google-analytics.com/collect?v=1&tid=G-VWH1WBN99V&cid=555&aip=1&t=event&ec=email&ea=open&dp=dev&dt=DEV%20Site')
